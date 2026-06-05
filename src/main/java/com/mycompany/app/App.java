@@ -6,200 +6,230 @@ import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 
-import javax.net.ssl.*;
-import java.io.*;
-import java.net.URL;
+import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.cert.X509Certificate;
-import java.util.ArrayList;
+import java.nio.file.StandardCopyOption;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class App {
-    
-    private static final String TARGET_SITE = "http://www.papercdcase.com";
-    private static final String INPUT_DATA_PATH = "data/data.txt";
-    private static final String OUTPUT_FOLDER = "result";
-    private static final String OUTPUT_FILENAME = "cd.pdf";
-    
+
     public static void main(String[] args) {
-        System.out.println("=== Paper CD Case Generator ===");
-        
-        try {
-            List<String> discInfo = readDiscData(INPUT_DATA_PATH);
-            
-            WebDriver webBrowser = startBrowser();
-            populateForm(webBrowser, discInfo);
-            
-            String pdfUrl = webBrowser.getCurrentUrl();
-            System.out.println("PDF URL: " + pdfUrl);
-            
-            fetchAndSavePdf(pdfUrl, OUTPUT_FOLDER, OUTPUT_FILENAME);
-            
-            webBrowser.quit();
-            System.out.println("=== Process completed successfully ===");
-            
-        } catch (Exception ex) {
-            System.err.println("Error occurred: " + ex.getMessage());
-            ex.printStackTrace();
-        }
+        CdCoverGenerator generator = new CdCoverGenerator();
+        generator.run();
     }
-    
-    private static List<String> readDiscData(String path) throws IOException {
-        System.out.println("Reading data from: " + path);
-        List<String> lines = Files.readAllLines(Paths.get(path));
-        
-        List<String> cleaned = new ArrayList<>();
-        for (String line : lines) {
-            String trimmed = line.trim();
-            if (!trimmed.isEmpty()) {
-                cleaned.add(trimmed);
+}
+
+class CdCoverGenerator {
+
+    private static final String WEB_PAGE = "http://www.papercdcase.com";
+    private static final String INPUT_FILE = "data/data.txt";
+    private static final String RESULT_DIR = "result";
+    private static final String FINAL_NAME = "cd.pdf";
+
+    private WebDriver session;
+    private Path downloadPath;
+
+    public void run() {
+        try {
+            System.out.println("Starting CD cover generation process...");
+
+            List<String> lines = readInputData();
+            if (lines.isEmpty()) {
+                System.err.println("No data found in input file");
+                return;
+            }
+
+            setupDownloadDirectory();
+            session = createBrowserSession();
+
+            navigateToPage();
+            fillCoverDetails(lines);
+            submitForm();
+
+            waitForDownloadCompletion();
+            renameDownloadedFile();
+
+            System.out.println("CD cover generated successfully!");
+
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            if (session != null) {
+                session.quit();
             }
         }
-        
-        System.out.println("Loaded " + cleaned.size() + " lines");
-        return cleaned;
     }
-    
-    private static WebDriver startBrowser() {
-        ChromeOptions browserConfig = new ChromeOptions();
-        browserConfig.addArguments("--headless");
-        browserConfig.addArguments("--no-sandbox");
-        browserConfig.addArguments("--disable-dev-shm-usage");
-        browserConfig.addArguments("--disable-gpu");
-        browserConfig.addArguments("--window-size=1920,1080");
-        browserConfig.setAcceptInsecureCerts(true);
-        
-        WebDriver driver = new ChromeDriver(browserConfig);
-        System.out.println("Browser started");
-        
-        driver.get(TARGET_SITE);
-        System.out.println("Site opened: " + TARGET_SITE);
-        
+
+    private List<String> readInputData() throws IOException {
+        Path path = Paths.get(INPUT_FILE);
+        return Files.readAllLines(path);
+    }
+
+    private void setupDownloadDirectory() throws IOException {
+        downloadPath = Paths.get(RESULT_DIR).toAbsolutePath();
+        Files.createDirectories(downloadPath);
+        System.out.println("Download directory: " + downloadPath);
+    }
+
+    private WebDriver createBrowserSession() {
+        Map<String, Object> prefs = new HashMap<>();
+        prefs.put("download.default_directory", downloadPath.toString());
+        prefs.put("download.prompt_for_download", false);
+        prefs.put("plugins.always_open_pdf_externally", true);
+        prefs.put("safebrowsing.enabled", true);
+
+        ChromeOptions config = new ChromeOptions();
+        config.setExperimentalOption("prefs", prefs);
+        config.addArguments("--headless");
+        config.addArguments("--disable-gpu");
+        config.addArguments("--no-sandbox");
+        config.addArguments("--disable-dev-shm-usage");
+        config.addArguments("--ignore-certificate-errors");
+
+        WebDriver driver = new ChromeDriver(config);
+        System.out.println("Browser session created");
         return driver;
     }
-    
-    private static void populateForm(WebDriver driver, List<String> data) {
-        System.out.println("Populating form...");
-        
-        String artistName = data.size() > 0 ? data.get(0) : "Unknown Artist";
-        String albumTitle = data.size() > 1 ? data.get(1) : "Unknown Album";
-        
-        System.out.println("Artist: " + artistName);
-        System.out.println("Album: " + albumTitle);
-        
-        WebElement artistInput = driver.findElement(By.name("artist"));
-        artistInput.clear();
-        artistInput.sendKeys(artistName);
-        
-        WebElement titleInput = driver.findElement(By.name("title"));
-        titleInput.clear();
-        titleInput.sendKeys(albumTitle);
-        
-        int trackIndex = 0;
+
+    private void navigateToPage() {
+        session.get(WEB_PAGE);
+        System.out.println("Page loaded: " + WEB_PAGE);
+        sleep(2000);
+    }
+
+    private void fillCoverDetails(List<String> data) {
+        String artist = data.size() > 0 ? data.get(0).trim() : "";
+        String title = data.size() > 1 ? data.get(1).trim() : "";
+
+        System.out.println("Artist: " + artist);
+        System.out.println("Title: " + title);
+
+        setInputValue("artist", artist);
+        setInputValue("title", title);
+
+        int trackNum = 0;
         for (int i = 2; i < data.size() && i < 18; i++) {
-            trackIndex++;
-            String trackTitle = data.get(i);
+            String track = data.get(i).trim();
+            if (!track.isEmpty()) {
+                trackNum++;
+                setInputValue("track" + trackNum, track);
+                System.out.println("Track " + trackNum + ": " + track);
+            }
+        }
+
+        selectOption("template", "jewel");
+        selectOption("size", "a4");
+    }
+
+    private void setInputValue(String fieldName, String value) {
+        try {
+            WebElement input = session.findElement(By.name(fieldName));
+            input.clear();
+            input.sendKeys(value);
+        } catch (Exception e) {
+            System.out.println("Warning: Could not set field " + fieldName);
+        }
+    }
+
+    private void selectOption(String groupName, String value) {
+        try {
+            String xpath = "//input[@name='" + groupName + "' and @value='" + value + "']";
+            WebElement radio = session.findElement(By.xpath(xpath));
+            radio.click();
+        } catch (Exception e) {
+            System.out.println("Warning: Could not select " + groupName + "=" + value);
+        }
+    }
+
+    private void submitForm() {
+        try {
+            WebElement button = session.findElement(By.name("submit"));
+            button.click();
+            System.out.println("Form submitted");
+        } catch (Exception e) {
+            System.err.println("Could not submit form: " + e.getMessage());
+        }
+    }
+
+    private void waitForDownloadCompletion() {
+        System.out.println("Waiting for PDF download to complete...");
+        
+        File dir = downloadPath.toFile();
+        int maxAttempts = 30;
+        int attempt = 0;
+        
+        while (attempt < maxAttempts) {
+            File[] files = dir.listFiles();
+            if (files == null) break;
             
-            String inputName = "track" + trackIndex;
-            WebElement trackInput = driver.findElement(By.name(inputName));
-            trackInput.clear();
-            trackInput.sendKeys(trackTitle);
+            boolean downloading = false;
+            for (File file : files) {
+                String name = file.getName();
+                if (name.endsWith(".crdownload") || name.endsWith(".tmp")) {
+                    downloading = true;
+                    System.out.println("Download in progress: " + name);
+                    break;
+                }
+            }
             
-            System.out.println("Track " + trackIndex + ": " + trackTitle);
+            if (!downloading) {
+                File[] pdfFiles = dir.listFiles((d, name) -> name.toLowerCase().endsWith(".pdf"));
+                if (pdfFiles != null && pdfFiles.length > 0) {
+                    System.out.println("PDF file found: " + pdfFiles[0].getName());
+                    return;
+                }
+            }
+            
+            sleep(1000);
+            attempt++;
         }
         
-        selectRadioOption(driver, "template", "jewel");
-        selectRadioOption(driver, "size", "a4");
+        System.out.println("Download wait completed after " + attempt + " seconds");
+    }
+
+    private void renameDownloadedFile() throws IOException {
+        File dir = downloadPath.toFile();
+        File[] allFiles = dir.listFiles();
         
-        WebElement generateButton = driver.findElement(By.name("submit"));
-        generateButton.click();
-        System.out.println("Form submitted");
+        if (allFiles == null || allFiles.length == 0) {
+            System.err.println("No files found in download directory");
+            return;
+        }
         
+        System.out.println("Files in download directory:");
+        for (File file : allFiles) {
+            System.out.println("  - " + file.getName() + " (" + file.length() + " bytes)");
+        }
+        
+        File pdfFile = null;
+        for (File file : allFiles) {
+            if (file.getName().toLowerCase().endsWith(".pdf") && !file.getName().equals(FINAL_NAME)) {
+                pdfFile = file;
+                break;
+            }
+        }
+        
+        if (pdfFile != null) {
+            Path target = downloadPath.resolve(FINAL_NAME);
+            Files.move(pdfFile.toPath(), target, StandardCopyOption.REPLACE_EXISTING);
+            System.out.println("PDF renamed to: " + FINAL_NAME);
+            System.out.println("Final file: " + target + " (" + target.toFile().length() + " bytes)");
+        } else {
+            System.err.println("No PDF file found to rename");
+        }
+    }
+
+    private void sleep(long millis) {
         try {
-            Thread.sleep(5000);
+            Thread.sleep(millis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-        }
-    }
-    
-    private static void selectRadioOption(WebDriver driver, String paramName, String paramValue) {
-        try {
-            String cssQuery = "input[name='" + paramName + "'][value='" + paramValue + "']";
-            WebElement radioBtn = driver.findElement(By.cssSelector(cssQuery));
-            radioBtn.click();
-            System.out.println("Selected: " + paramName + "=" + paramValue);
-        } catch (Exception e) {
-            System.out.println("Warning: Could not select " + paramName + "=" + paramValue);
-        }
-    }
-    
-    private static void fetchAndSavePdf(String fileUrl, String outputDir, String fileName) {
-        try {
-            Files.createDirectories(Paths.get(outputDir));
-            
-            String fullPath = outputDir + File.separator + fileName;
-            System.out.println("Downloading to: " + fullPath);
-            
-            disableSslVerification();
-            
-            URL url = new URL(fileUrl);
-            HttpsURLConnection connection = (HttpsURLConnection) url.openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(15000);
-            connection.setReadTimeout(15000);
-            
-            int statusCode = connection.getResponseCode();
-            if (statusCode != HttpsURLConnection.HTTP_OK) {
-                throw new IOException("Server returned HTTP code: " + statusCode);
-            }
-            
-            try (InputStream inputStream = connection.getInputStream();
-                 FileOutputStream outputStream = new FileOutputStream(fullPath)) {
-                
-                byte[] buffer = new byte[8192];
-                int bytesRead;
-                long totalDownloaded = 0;
-                
-                while ((bytesRead = inputStream.read(buffer)) != -1) {
-                    outputStream.write(buffer, 0, bytesRead);
-                    totalDownloaded += bytesRead;
-                }
-                
-                System.out.println("Downloaded " + totalDownloaded + " bytes");
-            }
-            
-            System.out.println("PDF saved successfully: " + fullPath);
-            
-        } catch (Exception e) {
-            System.err.println("Download failed: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-    
-    private static void disableSslVerification() {
-        try {
-            TrustManager[] trustAllCerts = new TrustManager[] {
-                new X509TrustManager() {
-                    public X509Certificate[] getAcceptedIssuers() {
-                        return null;
-                    }
-                    public void checkClientTrusted(X509Certificate[] certs, String authType) {
-                    }
-                    public void checkServerTrusted(X509Certificate[] certs, String authType) {
-                    }
-                }
-            };
-            
-            SSLContext sc = SSLContext.getInstance("SSL");
-            sc.init(null, trustAllCerts, new java.security.SecureRandom());
-            HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
-            
-            HostnameVerifier allHostsValid = (hostname, session) -> true;
-            HttpsURLConnection.setDefaultHostnameVerifier(allHostsValid);
-            
-        } catch (Exception e) {
-            System.err.println("Warning: Could not disable SSL verification: " + e.getMessage());
         }
     }
 }
